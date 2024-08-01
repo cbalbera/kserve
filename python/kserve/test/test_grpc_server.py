@@ -15,14 +15,14 @@
 import grpc
 import grpc_testing
 import numpy as np
-import pandas as pd
+# import pandas as pd
 import pytest
 from google.protobuf.json_format import MessageToDict
 from unittest.mock import patch
 
 from kserve import Model, ModelServer
 from kserve.errors import InvalidInput
-from kserve.protocol.grpc import grpc_predict_v2_pb2, servicer
+# from kserve.protocol.grpc import grpc_predict_v2_pb2, servicer
 from kserve.protocol.infer_type import serialize_byte_tensor, InferResponse
 from kserve.utils.utils import get_predict_response
 

@@ -29,7 +29,7 @@ from ray.serve.handle import DeploymentHandle
 
 from . import logging
 from .logging import logger
-from .model import BaseKServeModel
+from .model import BaseKServeModel, Model
 from .model_repository import ModelRepository
 from .protocol.dataplane import DataPlane
 from .protocol.grpc.server import GRPCServer
@@ -288,13 +288,23 @@ class ModelServer:
         self._custom_exception_handler = None
 
     def start(
-        self, models: Union[List[BaseKServeModel], Dict[str, Deployment]]
+            self, models: Union[List[BaseKServeModel], Dict[str, Deployment]]
     ) -> None:
         """Start the model server with a set of registered models.
 
         Args:
             models: a list of models to register to the model server.
         """
+
+        async def servers_task():
+            servers = [self.serve(models)]
+            if self.enable_grpc:
+                servers.append(self._grpc_server.start(self.max_threads))
+            await asyncio.gather(*servers)
+
+        asyncio.run(servers_task())
+
+    async def serve(self, models: Union[List[BaseKServeModel], Dict[str, Deployment]]):
         if isinstance(models, list):
             at_least_one_model_ready = False
             for model in models:
@@ -322,76 +332,66 @@ class ModelServer:
                 raise RuntimeError("Model type should be RayServe Deployment")
         else:
             raise RuntimeError("Unknown model collection types")
-
+        loop = asyncio.get_event_loop()
         if self.max_asyncio_workers is None:
             # formula as suggest in https://bugs.python.org/issue35279
             self.max_asyncio_workers = min(32, utils.cpu_count() + 4)
         logger.info(f"Setting max asyncio worker threads as {self.max_asyncio_workers}")
-        asyncio.get_event_loop().set_default_executor(
+        loop.set_default_executor(
             concurrent.futures.ThreadPoolExecutor(max_workers=self.max_asyncio_workers)
         )
+        logger.info(f"Starting uvicorn with {self.workers} workers")
+        if sys.platform not in ["win32", "win64"]:
+            sig_list = [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]
+        else:
+            sig_list = [signal.SIGINT, signal.SIGTERM]
 
-        async def serve():
-            logger.info(f"Starting uvicorn with {self.workers} workers")
-            loop = asyncio.get_event_loop()
-            if sys.platform not in ["win32", "win64"]:
-                sig_list = [signal.SIGINT, signal.SIGTERM, signal.SIGQUIT]
-            else:
-                sig_list = [signal.SIGINT, signal.SIGTERM]
+        for sig in sig_list:
+            loop.add_signal_handler(
+                sig, lambda s=sig: asyncio.create_task(self.stop(sig=s))
+            )
+        if self._custom_exception_handler is None:
+            loop.set_exception_handler(self.default_exception_handler)
+        else:
+            loop.set_exception_handler(self._custom_exception_handler)
+        if self.workers == 1:
+            self._rest_server = UvicornServer(
+                self.http_port,
+                [],
+                self.dataplane,
+                self.model_repository_extension,
+                self.enable_docs_url,
+                # By setting log_config to None we tell Uvicorn not to configure logging as it is already
+                # configured by kserve.
+                log_config=None,
+                access_log_format=self.access_log_format,
+            )
+            await self._rest_server.run()
+        else:
+            # Since py38 MacOS/Windows defaults to use spawn for starting multiprocessing.
+            # https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods
+            # Spawn does not work with FastAPI/uvicorn in multiprocessing mode, use fork for multiprocessing
+            # https://github.com/tiangolo/fastapi/issues/1586
+            serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            serversocket.bind(("0.0.0.0", self.http_port))
+            serversocket.listen(5)
+            multiprocessing.set_start_method("fork")
+            self._rest_server = UvicornServer(
+                self.http_port,
+                [serversocket],
+                self.dataplane,
+                self.model_repository_extension,
+                self.enable_docs_url,
+                # By setting log_config to None we tell Uvicorn not to configure logging as it is already
+                # configured by kserve.
+                log_config=None,
+                access_log_format=self.access_log_format,
+            )
+            for _ in range(self.workers):
+                p = Process(target=self._rest_server.run_sync)
+                p.start()
 
-            for sig in sig_list:
-                loop.add_signal_handler(
-                    sig, lambda s=sig: asyncio.create_task(self.stop(sig=s))
-                )
-            if self._custom_exception_handler is None:
-                loop.set_exception_handler(self.default_exception_handler)
-            else:
-                loop.set_exception_handler(self._custom_exception_handler)
-            if self.workers == 1:
-                self._rest_server = UvicornServer(
-                    self.http_port,
-                    [],
-                    self.dataplane,
-                    self.model_repository_extension,
-                    self.enable_docs_url,
-                    # By setting log_config to None we tell Uvicorn not to configure logging as it is already
-                    # configured by kserve.
-                    log_config=None,
-                    access_log_format=self.access_log_format,
-                )
-                await self._rest_server.run()
-            else:
-                # Since py38 MacOS/Windows defaults to use spawn for starting multiprocessing.
-                # https://docs.python.org/3/library/multiprocessing.html#contexts-and-start-methods
-                # Spawn does not work with FastAPI/uvicorn in multiprocessing mode, use fork for multiprocessing
-                # https://github.com/tiangolo/fastapi/issues/1586
-                serversocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                serversocket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                serversocket.bind(("0.0.0.0", self.http_port))
-                serversocket.listen(5)
-                multiprocessing.set_start_method("fork")
-                self._rest_server = UvicornServer(
-                    self.http_port,
-                    [serversocket],
-                    self.dataplane,
-                    self.model_repository_extension,
-                    self.enable_docs_url,
-                    # By setting log_config to None we tell Uvicorn not to configure logging as it is already
-                    # configured by kserve.
-                    log_config=None,
-                    access_log_format=self.access_log_format,
-                )
-                for _ in range(self.workers):
-                    p = Process(target=self._rest_server.run_sync)
-                    p.start()
-
-        async def servers_task():
-            servers = [serve()]
-            if self.enable_grpc:
-                servers.append(self._grpc_server.start(self.max_threads))
-            await asyncio.gather(*servers)
-
-        await servers_task()
 
     async def stop(self, sig: Optional[int] = None):
         """Stop the instances of REST and gRPC model servers.

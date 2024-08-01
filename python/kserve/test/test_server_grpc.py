@@ -9,7 +9,7 @@ import os
 # Import Kserve
 from typing import Dict, Union
 from kserve import (Model, ModelServer, model_server, InferInput, InferRequest, InferOutput, InferResponse,
-                    InferenceServerClient)
+                    InferenceGRPCClient)
 from kserve.utils.utils import generate_uuid
 
 
@@ -38,6 +38,7 @@ class TestModel(Model):  # Test model
 # Function to run the model server
 async def run_model(secure_grpc_server, models):
     if secure_grpc_server:
+        print("starting test secure_grpc_server")
         server_key = open("./test/kserve_test_certs/server-key.pem", "rb").read()
         server_cert = open("./test/kserve_test_certs/server-cert.pem", "rb").read()
         ca_cert = open("./test/kserve_test_certs/ca-cert.pem", "rb").read()
@@ -49,11 +50,13 @@ async def run_model(secure_grpc_server, models):
         )
         await server.start(models)
     else:
+        print("starting test insecure_grpc_server")
         server = ModelServer()
         await server.start(models)
 
 
 async def grpc_infer_request(ssl: bool, port: str, integer: int, queue: multiprocessing.Queue):
+    print("starting grpc_infer_request")
     await asyncio.sleep(1)
     if ssl:
         channel_args = ('grpc.ssl_target_name_override', 'localhost')
@@ -65,21 +68,21 @@ async def grpc_infer_request(ssl: bool, port: str, integer: int, queue: multipro
             root_certificates=ca_cert, private_key=client_key, certificate_chain=client_cert
         )
         creds = channel_creds
-        client = InferenceServerClient(url=port,
-                                       ssl=ssl,
+        client = InferenceGRPCClient(url=port,
+                                       use_ssl=ssl,
                                        creds=creds,
                                        channel_args=(
                                            # grpc.ssl_target_name_override must be set to match CN used in cert gen
                                            channel_args,)
                                        )
     else:  # not ssl
-        client = InferenceServerClient(url=port,
-                                       ssl=ssl,
+        client = InferenceGRPCClient(url=port,
+                                       use_ssl=ssl,
                                        )
     data = float(integer)
     infer_input = InferInput(name="input-0", shape=[1], datatype="FP32", data=[data])
     request = InferRequest(infer_inputs=[infer_input], model_name="test-model")
-    res = client.infer(infer_request=request)
+    res = await client.infer(infer_request=request)
     print(f"res is: {res}")
     queue.put(res.outputs[0].contents.fp32_contents[0])
 
@@ -94,6 +97,7 @@ def grpc_infer_request_sync(ssl: bool, port: str, integer: int, queue: multiproc
 
 class TestGrpcSecureServer:
     def test_insecure_grpc_server_returns(self):
+        print("starting test_insecure_grpc_server_returns")
         models = [TestModel("test-model")]
 
         queue = multiprocessing.Queue()
