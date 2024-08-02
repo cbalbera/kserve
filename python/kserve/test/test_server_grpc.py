@@ -13,7 +13,7 @@ from kserve import (Model, ModelServer, model_server, InferInput, InferRequest, 
 from kserve.utils.utils import generate_uuid
 
 
-class TestModel(Model):  # Test model
+class TestModelForSecure(Model):  # Test model
     def __init__(self, name: str):
         super().__init__(name)
         self.name = name
@@ -38,9 +38,9 @@ class TestModel(Model):  # Test model
 # Function to run the model server
 async def run_model(secure_grpc_server, models):
     if secure_grpc_server:
-        server_key = open("./test/kserve_test_certs/server-key.pem", "rb").read()
-        server_cert = open("./test/kserve_test_certs/server-cert.pem", "rb").read()
-        ca_cert = open("./test/kserve_test_certs/ca-cert.pem", "rb").read()
+        server_key = open("./test/kserve_test_certs_2/server-key.pem", "rb").read()
+        server_cert = open("./test/kserve_test_certs_2/server-cert.pem", "rb").read()
+        ca_cert = open("./test/kserve_test_certs_2/ca-cert.pem", "rb").read()
         server = ModelServer(
             secure_grpc_server=secure_grpc_server,
             server_key=server_key,
@@ -57,9 +57,9 @@ async def grpc_infer_request(ssl: bool, port: str, integer: int, queue: multipro
     await asyncio.sleep(1)
     if ssl:
         channel_args = ('grpc.ssl_target_name_override', 'localhost')
-        client_key = open("./test/kserve_test_certs/client-key.pem", "rb").read()
-        client_cert = open("./test/kserve_test_certs/client-cert.pem", "rb").read()
-        ca_cert = open("./test/kserve_test_certs/ca-cert.pem", "rb").read()
+        client_key = open("./test/kserve_test_certs_2/client-key.pem", "rb").read()
+        client_cert = open("./test/kserve_test_certs_2/client-cert.pem", "rb").read()
+        ca_cert = open("./test/kserve_test_certs_2/ca-cert.pem", "rb").read()
 
         channel_creds = grpc.ssl_channel_credentials(
             root_certificates=ca_cert, private_key=client_key, certificate_chain=client_cert
@@ -94,7 +94,7 @@ def grpc_infer_request_sync(ssl: bool, port: str, integer: int, queue: multiproc
 
 class TestGrpcSecureServer:
     def test_insecure_grpc_server_returns(self):
-        models = [TestModel("test-model")]
+        models = [TestModelForSecure("test-model")]
 
         queue = multiprocessing.Queue()
 
@@ -114,7 +114,7 @@ class TestGrpcSecureServer:
         assert output == 2.0
 
     def test_secure_grpc_server_returns(self):
-        models = [TestModel("test-model")]
+        models = [TestModelForSecure("test-model")]
 
         queue = multiprocessing.Queue()
 
@@ -134,7 +134,7 @@ class TestGrpcSecureServer:
         assert output == 2.0
 
     def test_secure_grpc_server_insecure_client_fails(self):
-        models = [TestModel("test-model")]
+        models = [TestModelForSecure("test-model")]
 
         queue = multiprocessing.Queue()
 
@@ -157,7 +157,7 @@ class TestGrpcSecureServer:
         assert output is None
 
     def test_insecure_grpc_server_secure_client_fails(self):
-        models = [TestModel("test-model")]
+        models = [TestModelForSecure("test-model")]
 
         queue = multiprocessing.Queue()
 
